@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 LOC_RE = re.compile(r"^(\d+)\s*\|(.*)$")
+LOC_MARK_RE = re.compile(r"^(\d+)\s*\|>")
 MAIN_RE = re.compile(r"^[ \t]*def[ \t]+main[ \t]*\(", re.MULTILINE)
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
 DECL_RE = re.compile(r"^[ \t]*(?:def|type|law)[ \t]+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)?).*")
@@ -248,6 +249,71 @@ def drop_staged(path):
         shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
+def block_start(lines, i):
+    """Index of the `Error:` line opening the block around line i."""
+    for k in range(i, max(-1, i - 12), -1):
+        if lines[k].strip().startswith("Error:"):
+            return k
+    return max(0, i - 4)
+
+
+def find_decl_line(text, name):
+    """0-based line of `def`/`type`/`law <name>` in text, if any."""
+    short = name.strip().rsplit(" ", 1)[-1].rsplit(".", 1)[-1]
+    if not short:
+        return None
+    for idx, line in enumerate(text.splitlines()):
+        m = DECL_RE.match(line)
+        if m and m.group(1).rsplit(".", 1)[-1] == short:
+            return idx
+    return None
+
+
+def error_spots(err, text):
+    """Yield (0-based line, message) for each Bend checker error.
+
+    Bend reports two location shapes: bare `Location:` followed by
+    `N | …` snippet lines, and `Location: <defname>` followed by snippet
+    lines where `N|>` marks the exact line.
+    """
+    lines = err.splitlines()
+    n = len(lines)
+    i = 0
+    while i < n:
+        s = lines[i].strip()
+        if s == "Location:" and i + 1 < n:
+            m = LOC_RE.match(lines[i + 1])
+            if m:
+                start = block_start(lines, i)
+                yield max(0, int(m.group(1)) - 1), "\n".join(lines[start:i + 2]).strip()[:800]
+                i += 2
+                continue
+            i += 1
+            continue
+        if s.startswith("Location:"):
+            name = s[len("Location:"):].strip()
+            target, end = None, i + 1
+            for j in range(i + 1, min(i + 12, n)):
+                mm = LOC_MARK_RE.match(lines[j])
+                if mm:
+                    target = max(0, int(mm.group(1)) - 1)
+                    end = j + 1
+                    break
+                if target is None:
+                    m2 = LOC_RE.match(lines[j])
+                    if m2:
+                        target = max(0, int(m2.group(1)) - 1)
+            if target is None and text:
+                target = find_decl_line(text, name)
+            if target is None:
+                target = 0
+            start = block_start(lines, i)
+            yield target, "\n".join(lines[start:end]).strip()[:800]
+            i = end
+            continue
+        i += 1
+
+
 def check(uri_to_path, uri, text):
     path = uri_to_path.get(uri, uri.replace("file://", "", 1))
     if not os.path.isfile(path) or not path.endswith(".bend"):
@@ -265,22 +331,12 @@ def check(uri_to_path, uri, text):
         if p.returncode == 0:
             return []
         diags = []
-        lines = err.splitlines()
-        i = 0
-        while i < len(lines):
-            if lines[i].strip() == "Location:" and i + 1 < len(lines):
-                m = LOC_RE.match(lines[i + 1])
-                if m:
-                    ln = max(0, int(m.group(1)) - 1)
-                    msg = "\n".join(lines[max(0, i - 4):i]).strip() or err.strip()[:500]
-                    diags.append({
-                        "range": {"start": {"line": ln, "character": 0},
-                                  "end": {"line": ln, "character": 1000}},
-                        "severity": 1, "source": "bend", "message": msg,
-                    })
-                    i += 2
-                    continue
-            i += 1
+        for ln, msg in error_spots(err, text):
+            diags.append({
+                "range": {"start": {"line": ln, "character": 0},
+                          "end": {"line": ln, "character": 1000}},
+                "severity": 1, "source": "bend", "message": msg or err.strip()[:500],
+            })
         if not diags:
             diags.append({"range": {"start": {"line": 0, "character": 0},
                                     "end": {"line": 0, "character": 1000}},
