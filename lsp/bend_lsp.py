@@ -11,7 +11,8 @@ import tempfile
 LOC_RE = re.compile(r"^(\d+)\s*\|(.*)$")
 MAIN_RE = re.compile(r"^[ \t]*def[ \t]+main[ \t]*\(", re.MULTILINE)
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
-DEF_RE = re.compile(r"^[ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)?).*")
+DECL_RE = re.compile(r"^[ \t]*(?:def|type|law)[ \t]+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)?).*")
+IMPORT_RE = re.compile(r"^[ \t]*import[ \t]+(\S+)(?:[ \t]+as[ \t]+([A-Za-z_][A-Za-z0-9_']*))?")
 
 KEYWORDS = {
     "def": "Function definition: `def f(x: A) -> B:`",
@@ -94,16 +95,78 @@ def word_at(text, line, character):
 
 
 def local_def(text, name):
-    """First `def <name>` header line in the current file, if any."""
+    """First `def`/`type`/`law <name>` header line in the given text, if any."""
     short = name.rsplit(".", 1)[-1]
     for line in text.splitlines():
-        m = DEF_RE.match(line)
+        m = DECL_RE.match(line)
         if m and m.group(1).rsplit(".", 1)[-1] == short:
             return line.strip()
     return None
 
 
-def hover(docs, uri, position):
+def file_imports(text):
+    """Map of `alias -> path` from `import <path> as <alias>` lines."""
+    out = {}
+    for line in text.splitlines():
+        m = IMPORT_RE.match(line)
+        if m and m.group(2):
+            out[m.group(2)] = m.group(1)
+    return out
+
+
+def imported_files(text, base):
+    """Local `(alias, abspath)` module files imported by the buffer."""
+    files = []
+    if not base or not os.path.isdir(base):
+        return files
+    for alias, path in file_imports(text).items():
+        if path == "Base" or path.startswith("0x") or not path.startswith("."):
+            continue
+        full = os.path.normpath(os.path.join(base, path))
+        if os.path.isfile(full):
+            files.append((alias, full))
+    return files
+
+
+def module_sig(docs, text, base, alias, short):
+    """`def <short>` header from the module imported as `alias`, if found."""
+    for al, path in imported_files(text, base):
+        if al != alias:
+            continue
+        buf = docs.get("file://" + path)
+        if buf is not None:
+            sig = local_def(buf, short)
+        else:
+            sig = None
+            try:
+                with open(path) as f:
+                    sig = local_def(f.read(), short)
+            except OSError:
+                pass
+        if sig:
+            return f"{os.path.basename(path)}: `{sig}`"
+    return None
+
+
+def unqualified_sig(docs, text, base, word):
+    """`word` header from any locally imported module."""
+    for _al, path in imported_files(text, base):
+        buf = docs.get("file://" + path)
+        if buf is not None:
+            sig = local_def(buf, word)
+        else:
+            sig = None
+            try:
+                with open(path) as f:
+                    sig = local_def(f.read(), word)
+            except OSError:
+                pass
+        if sig:
+            return f"{os.path.basename(path)}: `{sig}`"
+    return None
+
+
+def hover(docs, stages, uri, position):
     text = docs.get(uri)
     if text is None:
         return None
@@ -114,9 +177,33 @@ def hover(docs, uri, position):
         sig = local_def(text, word)
         body = KEYWORDS[word] + (f"\n\nLocal: `{sig}`" if sig else "")
         return {"contents": {"kind": "markdown", "value": body}}
-    sig = local_def(text, word)
-    if sig:
-        return {"contents": {"kind": "markdown", "value": f"```bend\n{sig}\n```"}}
+    imports = file_imports(text)
+    if word in imports:
+        return {"contents": {"kind": "markdown",
+                             "value": f"Module `{word}` → `{imports[word]}`"}}
+    # Resolve sibling modules against the real file, or the staged copy
+    # (which symlinks the real siblings) when it has never been saved.
+    base = None
+    real = uri.replace("file://", "", 1)
+    if os.path.isfile(real):
+        base = os.path.dirname(real)
+    elif uri in stages:
+        base = os.path.dirname(stages[uri])
+    if "." in word:
+        alias, _, _ = word.partition(".")
+        short = word.rsplit(".", 1)[-1]
+        if alias in imports and base is not None:
+            sig = module_sig(docs, text, base, alias, short)
+            if sig:
+                return {"contents": {"kind": "markdown", "value": f"```bend\n{sig}\n```"}}
+    else:
+        sig = local_def(text, word)
+        if sig:
+            return {"contents": {"kind": "markdown", "value": f"```bend\n{sig}\n```"}}
+        if base is not None:
+            sig = unqualified_sig(docs, text, base, word)
+            if sig:
+                return {"contents": {"kind": "markdown", "value": f"```bend\n{sig}\n```"}}
     doc = base_lookup(word)
     if doc:
         return {"contents": {"kind": "markdown", "value": doc}}
@@ -248,7 +335,7 @@ def main():
                   "params": {"uri": uri, "diagnostics": check(uri_to_path, uri, docs.get(uri))}})
         elif method == "textDocument/hover":
             td = params.get("textDocument", {})
-            reply(hover(docs, td.get("uri", ""), params.get("position", {})))
+            reply(hover(docs, uri_to_path, td.get("uri", ""), params.get("position", {})))
         else:
             if mid is not None:
                 send({"jsonrpc": "2.0", "id": mid, "result": None})
