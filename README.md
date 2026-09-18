@@ -10,7 +10,8 @@ diagnostics.
   `match`/`case`, `do`-notation, rewrites, GPU calls, …). Grammar source:
   [FabianVegaA/tree-sitter-bend](https://github.com/FabianVegaA/tree-sitter-bend).
 - Language server shim (`bend-lsp`) reporting `bend` check errors as
-  diagnostics without running your code (`bend <file> -o /dev/null`).
+  diagnostics without running your code (`bend <file> -o /dev/null`), plus
+  hover with signatures from `bend base` and local `def` headers.
 - Snippets for common shapes (`bend-hello`, `bend-def`, `bend-match`).
 
 ## Requirements
