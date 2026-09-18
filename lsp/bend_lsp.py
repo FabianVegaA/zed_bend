@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,6 +122,44 @@ def hover(docs, uri, position):
     return None
 
 
+def stage_path(uri, text):
+    """Stage buffer text where relative imports resolve.
+
+    Writes the buffer to a fresh temp dir shadowing the real file, with
+    siblings (and subdirs) symlinked in so `./x.bend` and `./effs/x.c`
+    resolve exactly as they would next to the real file. Returns the
+    path to check, or None when staging is impossible.
+    """
+    if text is None:
+        return None
+    real = uri.replace("file://", "", 1)
+    base = os.path.basename(real) or "file.bend"
+    if not base.endswith(".bend"):
+        return None
+    parent = os.path.dirname(real)
+    stage = tempfile.mkdtemp(prefix="bend-lsp-")
+    if parent and os.path.isdir(parent):
+        try:
+            for entry in os.listdir(parent):
+                if entry == base:
+                    continue
+                os.symlink(os.path.join(parent, entry), os.path.join(stage, entry))
+        except OSError:
+            pass
+    dest = os.path.join(stage, base)
+    try:
+        with open(dest, "w") as f:
+            f.write(text)
+    except OSError:
+        return None
+    return dest
+
+
+def drop_staged(path):
+    if path:
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+
 def check(uri_to_path, uri):
     path = uri_to_path.get(uri, uri.replace("file://", "", 1))
     if not os.path.isfile(path) or not path.endswith(".bend"):
@@ -166,7 +205,6 @@ def main():
     buf = sys.stdin.buffer
     uri_to_path = {}
     docs = {}
-    tmpdir = tempfile.mkdtemp(prefix="bend-lsp-")
     while True:
         msg = read_msg(buf)
         if msg is None:
@@ -197,11 +235,10 @@ def main():
                     text = c.get("text", "")
             if uri.endswith(".bend") and text is not None:
                 docs[uri] = text
-                name = uri.rsplit("/", 1)[-1] or "file.bend"
-                path = os.path.join(tmpdir, name)
-                with open(path, "w") as f:
-                    f.write(text)
-                uri_to_path[uri] = path
+                drop_staged(uri_to_path.get(uri))
+                staged = stage_path(uri, text)
+                if staged is not None:
+                    uri_to_path[uri] = staged
             send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
                   "params": {"uri": uri, "diagnostics": check(uri_to_path, uri)}})
         elif method == "textDocument/hover":
