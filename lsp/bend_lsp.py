@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 LOC_RE = re.compile(r"^(\d+)\s*\|(.*)$")
+MAIN_RE = re.compile(r"^[ \t]*def[ \t]+main[ \t]*\(", re.MULTILINE)
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
 DEF_RE = re.compile(r"^[ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)?).*")
 
@@ -70,7 +71,7 @@ def base_lookup(name):
                 capture_output=True, text=True, timeout=10,
             )
             out = (p.stdout or "").strip()
-            if p.returncode == 0 and out:
+            if p.returncode == 0 and out and not out.startswith("bend:"):
                 result = "```bend\n" + out[:2000] + "\n```"
                 break
         except Exception:
@@ -160,15 +161,19 @@ def drop_staged(path):
         shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
-def check(uri_to_path, uri):
+def check(uri_to_path, uri, text):
     path = uri_to_path.get(uri, uri.replace("file://", "", 1))
     if not os.path.isfile(path) or not path.endswith(".bend"):
         return []
+    # `bend <file> -o /dev/null` typechecks without running, but demands
+    # a `main`; files without one are checked with plain `bend <file>`
+    # (which only checks and never runs when there is no `main`).
+    if text is not None and MAIN_RE.search(text):
+        args = [find_bend(), path, "-o", os.devnull]
+    else:
+        args = [find_bend(), path]
     try:
-        p = subprocess.run(
-            [find_bend(), path, "-o", os.devnull],
-            capture_output=True, text=True, timeout=30,
-        )
+        p = subprocess.run(args, capture_output=True, text=True, timeout=30)
         err = (p.stderr or "") + (p.stdout or "")
         if p.returncode == 0:
             return []
@@ -240,7 +245,7 @@ def main():
                 if staged is not None:
                     uri_to_path[uri] = staged
             send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
-                  "params": {"uri": uri, "diagnostics": check(uri_to_path, uri)}})
+                  "params": {"uri": uri, "diagnostics": check(uri_to_path, uri, docs.get(uri))}})
         elif method == "textDocument/hover":
             td = params.get("textDocument", {})
             reply(hover(docs, td.get("uri", ""), params.get("position", {})))
