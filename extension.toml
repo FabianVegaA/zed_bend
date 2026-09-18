@@ -1,0 +1,15 @@
+id = "bend"
+name = "Bend"
+version = "0.1.0"
+schema_version = 1
+authors = ["Bend Community"]
+description = "Bend language support: syntax highlighting, outline, snippets and `bend` diagnostics."
+repository = "https://github.com/higherorderco/bend"
+
+[grammars.bend]
+repository = "file:///Users/fabianvega/dev/tree-sitter-bend2"
+rev = "36ba35cce4743b415f915a4f2db29975501960bf"
+
+[language_servers.bend]
+name = "Bend"
+languages = ["Bend"]

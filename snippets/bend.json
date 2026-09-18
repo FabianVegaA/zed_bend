@@ -1,0 +1,23 @@
+{
+  "Hello world": {
+    "prefix": "bend-hello",
+    "description": "Minimal Bend program",
+    "body": [
+      "import Base",
+      "",
+      "def main() -> IO(Unit):",
+      "  do IO<Unit>:",
+      "    IO.print(\"Hello, world!\")"
+    ]
+  },
+  "Function": {
+    "prefix": "bend-def",
+    "description": "Bend function definition",
+    "body": ["def ${1:name}(${2:args}) -> ${3:U32}:", "  ${0:body}"]
+  },
+  "Match": {
+    "prefix": "bend-match",
+    "description": "Bend match expression",
+    "body": ["match ${1:x}:", "  case ${2:Pattern}:", "    ${0:body}"]
+  }
+}
